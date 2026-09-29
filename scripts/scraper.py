@@ -863,6 +863,260 @@ def job_tier_classification(title):
 
 
 # ============================================================
+# NORMALIZED JOB CLASSIFICATION
+# ============================================================
+
+_CANADA_PROVINCES = {
+    "ab": "AB", "alberta": "AB",
+    "bc": "BC", "british columbia": "BC",
+    "mb": "MB", "manitoba": "MB",
+    "nb": "NB", "new brunswick": "NB",
+    "nl": "NL", "newfoundland": "NL", "newfoundland and labrador": "NL",
+    "ns": "NS", "nova scotia": "NS",
+    "nt": "NT", "northwest territories": "NT",
+    "nu": "NU", "nunavut": "NU",
+    "on": "ON", "ontario": "ON",
+    "pe": "PE", "pei": "PE", "prince edward island": "PE",
+    "qc": "QC", "quebec": "QC",
+    "sk": "SK", "saskatchewan": "SK",
+    "yt": "YT", "yukon": "YT",
+}
+
+_US_STATES = {
+    "al": "AL", "alabama": "AL", "ak": "AK", "alaska": "AK",
+    "az": "AZ", "arizona": "AZ", "ar": "AR", "arkansas": "AR",
+    "ca": "CA", "california": "CA", "co": "CO", "colorado": "CO",
+    "ct": "CT", "connecticut": "CT", "de": "DE", "delaware": "DE",
+    "fl": "FL", "florida": "FL", "ga": "GA", "georgia": "GA",
+    "hi": "HI", "hawaii": "HI", "id": "ID", "idaho": "ID",
+    "il": "IL", "illinois": "IL", "in": "IN", "indiana": "IN",
+    "ia": "IA", "iowa": "IA", "ks": "KS", "kansas": "KS",
+    "ky": "KY", "kentucky": "KY", "la": "LA", "louisiana": "LA",
+    "me": "ME", "maine": "ME", "md": "MD", "maryland": "MD",
+    "ma": "MA", "massachusetts": "MA", "mi": "MI", "michigan": "MI",
+    "mn": "MN", "minnesota": "MN", "ms": "MS", "mississippi": "MS",
+    "mo": "MO", "missouri": "MO", "mt": "MT", "montana": "MT",
+    "ne": "NE", "nebraska": "NE", "nv": "NV", "nevada": "NV",
+    "nh": "NH", "new hampshire": "NH", "nj": "NJ", "new jersey": "NJ",
+    "nm": "NM", "new mexico": "NM", "ny": "NY", "new york": "NY",
+    "nc": "NC", "north carolina": "NC", "nd": "ND", "north dakota": "ND",
+    "oh": "OH", "ohio": "OH", "ok": "OK", "oklahoma": "OK",
+    "or": "OR", "oregon": "OR", "pa": "PA", "pennsylvania": "PA",
+    "ri": "RI", "rhode island": "RI", "sc": "SC", "south carolina": "SC",
+    "sd": "SD", "south dakota": "SD", "tn": "TN", "tennessee": "TN",
+    "tx": "TX", "texas": "TX", "ut": "UT", "utah": "UT",
+    "vt": "VT", "vermont": "VT", "va": "VA", "virginia": "VA",
+    "wa": "WA", "washington": "WA", "wv": "WV", "west virginia": "WV",
+    "wi": "WI", "wisconsin": "WI", "wy": "WY", "wyoming": "WY",
+    "dc": "DC", "district of columbia": "DC",
+}
+
+_DOMAIN_PATTERNS = {
+    "software": [
+        r"\bsoftware\b", r"\bdeveloper\b", r"\bprogrammer\b",
+        r"\bbackend\b", r"\bback[- ]?end\b", r"\bfrontend\b", r"\bfront[- ]?end\b",
+        r"\bfull[- ]?stack\b", r"\bweb developer\b", r"\bapplication engineer\b",
+        r"\bmobile developer\b", r"\bmobile engineer\b", r"\bsystems engineer\b",
+    ],
+    "ai_ml": [
+        r"\bartificial intelligence\b", r"\b\bai\b", r"\bmachine learning\b",
+        r"\bml engineer\b", r"\bdeep learning\b", r"\bnlp\b", r"\bnatural language\b",
+        r"\bcomputer vision\b", r"\bllm\b", r"\blarge language model\b",
+        r"\bgenerative ai\b", r"\bgenai\b", r"\breinforcement learning\b",
+    ],
+    "data": [
+        r"\bdata scientist\b", r"\bdata science\b", r"\bdata engineer\b",
+        r"\bdata analyst\b", r"\banalytics\b", r"\bdata platform\b",
+        r"\bdata warehouse\b", r"\bdata infrastructure\b",
+    ],
+    "cloud": [
+        r"\bcloud\b", r"\baws\b", r"\bazure\b", r"\bgcp\b",
+        r"\bgoogle cloud\b", r"\bcloud engineer\b", r"\bcloud architect\b",
+        r"\bcloud infrastructure\b",
+    ],
+    "devops": [
+        r"\bdevops\b", r"\bci/cd\b", r"\bcontinuous integration\b",
+        r"\bcontinuous delivery\b", r"\brelease engineer\b", r"\bbuild engineer\b",
+        r"\binfrastructure as code\b", r"\bterraform\b", r"\bansible\b",
+        r"\bsite reliability\b", r"\bsre\b",
+    ],
+    "platform": [
+        r"\bplatform engineer\b", r"\bplatform engineering\b", r"\bplatform developer\b",
+        r"\bdeveloper platform\b", r"\binternal developer platform\b",
+        r"\bdeveloper experience\b", r"\bdevex\b",
+        r"\bsite reliability\b", r"\bsre\b",
+    ],
+    "security": [
+        r"\bsecurity engineer\b", r"\bcybersecurity\b", r"\bapplication security\b",
+        r"\bcloud security\b", r"\bsecurity analyst\b",
+    ],
+    "embedded": [
+        r"\bembedded\b", r"\bfirmware\b", r"\bmicrocontroller\b", r"\bembedded systems\b",
+    ],
+}
+
+_DOMAIN_REGEX = {
+    domain: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+    for domain, patterns in _DOMAIN_PATTERNS.items()
+}
+
+
+def classify_location(location, remote=False):
+    """Classify a job location using explicit country/province/state clues.
+
+    We intentionally do not infer Canada/US from a bare city name because many
+    city names are ambiguous. Remote jobs only receive a country when the
+    location text explicitly identifies the country.
+    """
+    raw = location or ""
+    text = str(raw).strip().lower()
+
+    if not text or text in {"not specified", "n/a", "unknown"}:
+        return {
+            "location_country": "UNKNOWN",
+            "location_region": "",
+            "is_canada": False,
+            "is_us": False,
+        }
+
+    canada_explicit = "canada" in text
+
+    us_explicit = any(
+        token in text
+        for token in ("united states", "usa", "u.s.a.", "u.s.")
+    )
+
+    region = ""
+    for name, code in _CANADA_PROVINCES.items():
+        if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", text):
+            region = code
+            canada_explicit = True
+            break
+
+    if not region:
+        for name, code in _US_STATES.items():
+            if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", text):
+                region = code
+                us_explicit = True
+                break
+
+    if canada_explicit:
+        return {
+            "location_country": "CA",
+            "location_region": region,
+            "is_canada": True,
+            "is_us": False,
+        }
+
+    if us_explicit:
+        return {
+            "location_country": "US",
+            "location_region": region,
+            "is_canada": False,
+            "is_us": True,
+        }
+
+    if "remote" in text or remote:
+        return {
+            "location_country": "REMOTE",
+            "location_region": "",
+            "is_canada": False,
+            "is_us": False,
+        }
+
+    return {
+        "location_country": "OTHER",
+        "location_region": region,
+        "is_canada": False,
+        "is_us": False,
+    }
+
+
+def experience_level_classification(title):
+    """Classify title into intern/new_grad/entry/mid/senior.
+
+    This is deliberately conservative because the current ATS feeds expose
+    titles and limited metadata, not complete job descriptions.
+    """
+    text = re.sub(r"\s+", " ", (title or "").strip().lower())
+
+    if re.search(r"\bintern(?:ship)?\b|co[- ]?op\b|cooperative education", text):
+        return "intern"
+
+    if re.search(
+        r"\bnew[- ]?grad(?:uate)?\b|\brecent graduate\b|\buniversity graduate\b|"
+        r"\bgraduate program\b|\bearly career\b|\bentry[- ]?level\b|"
+        r"\bcampus hire\b|\buniversity hire\b",
+        text,
+    ):
+        return "new_grad"
+
+    if re.search(
+        r"\bjunior\b|\bjr\.?\b|\bassociate\b|\bapprentice\b|"
+        r"\btrainee\b|\bengineer\s+i\b|\bdeveloper\s+i\b|"
+        r"\b(?:engineer|developer|analyst|scientist|programmer)\s+1\b|"
+        r"\blevel\s*1\b|\blevel\s*i\b|\bl1\b|\bentry\b",
+        text,
+    ):
+        return "entry"
+
+    if re.search(
+        r"\bchief\b|\bcto\b|\bceo\b|\bcfo\b|\bvp\b|"
+        r"\bvice president\b|\bdirector\b|\bprincipal\b|"
+        r"\bdistinguished\b|\bfellow\b|\bstaff\b|\blead\b|"
+        r"\bhead of\b|\bsenior\b|\bsr\.?\b|\barchitect\b|"
+        r"\bmanager\b|\biii\b|\biv\b|\bv\b|\blevel [3-9]\b",
+        text,
+    ):
+        return "senior"
+
+    return "mid"
+
+
+def classify_job_domain(job):
+    """Return all plausible technical domains for a job."""
+    title = str(job.get("title") or "")
+    departments = job.get("departments") or []
+    if isinstance(departments, (str, bytes)):
+        departments = [departments]
+    department_text = " ".join(str(x or "") for x in departments)
+    text = f"{title} {department_text}".lower()
+
+    domains = []
+    for domain, patterns in _DOMAIN_REGEX.items():
+        if any(pattern.search(text) for pattern in patterns):
+            domains.append(domain)
+
+    # A generic engineering title is useful to users even when it does not
+    # contain the literal word software. Avoid tagging unrelated engineering.
+    if not domains and re.search(r"\bsoftware\s+engineer\b|\bdeveloper\b", text):
+        domains.append("software")
+
+    return sorted(set(domains))
+
+
+def normalize_job_classification(job):
+    """Add the normalized fields consumed by the frontend filters."""
+    title = str(job.get("title") or "")
+    location = job.get("location") or "Not specified"
+    if isinstance(location, dict):
+        location = location.get("name") or "Not specified"
+
+    remote = bool(job.get("remote")) or str(job.get("workplaceType") or "").lower() == "remote"
+    location_info = classify_location(location, remote=remote)
+
+    job["experience_level"] = experience_level_classification(title)
+    job["job_domain"] = classify_job_domain(job)
+    job.update(location_info)
+    job["is_remote"] = remote
+
+    # Keep the original field for backwards compatibility with the existing
+    # UI, salary lookup, and data consumers.
+    job["skill_level"] = job_tier_classification(title)
+    return job
+
+
+# ============================================================
 # DEAD SLUG CACHE
 # ============================================================
 
@@ -903,6 +1157,35 @@ def save_results(all_companies, active_companies, all_jobs):
     all_jobs = clean_job_data(all_jobs)
     cleaned_count = original_count - len(all_jobs)
     print(f"Removed {cleaned_count:,} invalid jobs (blank/not specified titles)")
+
+    # Apply one consistent classification pass to every ATS output. This keeps
+    # the source-specific fetchers simple and guarantees identical fields.
+    for job in all_jobs:
+        normalize_job_classification(job)
+
+    # HARD DATASET FILTER: this project is intentionally a Canadian
+    # entry-level/new-grad job board. Do not let US, international, mid-level,
+    # senior, or generic remote listings enter the generated dataset.
+    allowed_levels = {"new_grad", "entry"}
+    before_target_filter = len(all_jobs)
+    all_jobs = [
+        job for job in all_jobs
+        if job.get("is_canada") is True
+        and job.get("experience_level") in allowed_levels
+    ]
+    removed_target_filter = before_target_filter - len(all_jobs)
+    print(
+        f"Removed {removed_target_filter:,} jobs outside target: "
+        f"Canada + new-grad/entry/junior/level-1"
+    )
+
+    # Recompute active companies so the UI count reflects only companies with
+    # qualifying Canadian entry-level/new-grad jobs.
+    active_companies = {}
+    for job in all_jobs:
+        company = job.get("company")
+        if company:
+            active_companies[company] = active_companies.get(company, 0) + 1
 
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -956,6 +1239,13 @@ def save_results(all_companies, active_companies, all_jobs):
         "url",
         "ats",
         "skill_level",
+        "experience_level",
+        "job_domain",
+        "location_country",
+        "location_region",
+        "is_canada",
+        "is_us",
+        "is_remote",
         "is_recruiter",
         "workplaceType",
         "scraped_at",

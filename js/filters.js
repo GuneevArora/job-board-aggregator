@@ -5,25 +5,35 @@
 import { escapeRegex } from './ui_utils.js';
 import { loadApplicationStatus } from './storage.js';
 
-/**
- * Read current filter values from the DOM.
- * @returns {object} Filter state object
- */
+function getValue(id, fallback = '') {
+    const el = document.getElementById(id);
+    return el ? el.value : fallback;
+}
+
+function getChecked(id, fallback = false) {
+    const el = document.getElementById(id);
+    return el ? el.checked : fallback;
+}
+
+/** Read current filter values from the DOM. */
 export function readFilterInputs() {
     return {
-        hideRecruiters: document.getElementById('filter-hide-recruiters').checked,
-        remoteOnly: document.getElementById('filter-remote-only').checked,
-        hideApplied: document.getElementById('filter-hide-applied').checked,
-        title: document.getElementById('filter-title').value.toLowerCase().trim(),
-        company: document.getElementById('filter-company').value.toLowerCase().trim(),
-        location: document.getElementById('filter-location').value.toLowerCase().trim(),
-        salary: document.getElementById('filter-salary-min').value,
-        status: document.getElementById('filter-status').value,
-        ats: document.getElementById('filter-ats').value,
-        skill_level: document.getElementById('filter-skill-level').value,
-        posted: document.getElementById('filter-posted').value,
-        exclude: document.getElementById('filter-exclude').value.toLowerCase().trim(),
-        include: document.getElementById('filter-include').value.toLowerCase().trim(),
+        hideRecruiters: getChecked('filter-hide-recruiters', true),
+        remoteOnly: getChecked('filter-remote-only'),
+        hideApplied: getChecked('filter-hide-applied'),
+        title: getValue('filter-title').toLowerCase().trim(),
+        company: getValue('filter-company').toLowerCase().trim(),
+        location: getValue('filter-location').toLowerCase().trim(),
+        salary: getValue('filter-salary-min'),
+        status: getValue('filter-status'),
+        ats: getValue('filter-ats'),
+        skill_level: getValue('filter-skill-level'),
+        experience_level: getValue('filter-experience-level'),
+        country: getValue('filter-country'),
+        domain: getValue('filter-domain'),
+        posted: getValue('filter-posted'),
+        exclude: getValue('filter-exclude').toLowerCase().trim(),
+        include: getValue('filter-include').toLowerCase().trim(),
     };
 }
 
@@ -45,9 +55,7 @@ function fuzzyMatch(search, text, threshold = 0.75) {
     if (!search) return true;
     search = search.toLowerCase();
     text = text.toLowerCase();
-
     if (text.includes(search)) return true;
-
     const words = text.split(/\W+/).filter(Boolean);
     return words.some(word => {
         const maxLen = Math.max(word.length, search.length);
@@ -57,11 +65,13 @@ function fuzzyMatch(search, text, threshold = 0.75) {
     });
 }
 
-/**
- * Filter the full jobs array based on the current filter inputs.
- * @param {Array} allJobs - The complete jobs array
- * @returns {{ filteredJobs: Array, filterState: object }}
- */
+function jobDomains(job) {
+    return Array.isArray(job.job_domain)
+        ? job.job_domain.map(value => String(value).toLowerCase())
+        : [];
+}
+
+/** Filter the full jobs array based on current filter inputs. */
 export function filterJobs(allJobs) {
     const f = readFilterInputs();
     const apps = loadApplicationStatus();
@@ -79,77 +89,81 @@ export function filterJobs(allJobs) {
         status: f.status,
         ats: f.ats,
         skill_level: f.skill_level,
+        experience_level: f.experience_level,
+        country: f.country,
+        domain: f.domain,
         posted: f.posted,
         exclude: f.exclude,
-        include: f.include
+        include: f.include,
     };
 
     const filteredJobs = allJobs.filter(job => {
-        // Recruiter filter
+        // The dataset itself is Canada + entry/new-grad only. Keep this guard
+        // in the frontend too so stale/old data can never leak into the UI.
+        const experience = String(job.experience_level || '').toLowerCase();
+        if (job.is_canada !== true) return false;
+        if (!['new_grad', 'entry'].includes(experience)) return false;
+
         if (f.hideRecruiters && job.is_recruiter === true) return false;
 
-        // Application status
-        const url = job.url;
+        const url = job.url || job.absolute_url;
         const jobStatus = apps[url]?.status || '';
-
         if (f.hideApplied && (jobStatus === 'applied' || jobStatus === 'ignored')) return false;
         if (f.status && jobStatus !== f.status) return false;
 
-        // Text fields
         const title = (job.title || '').toLowerCase();
         const company = ((job.company || job.company_slug) || '').toLowerCase();
         let location = '';
         if (job.location) {
             location = typeof job.location === 'object'
                 ? (job.location.name || '').toLowerCase()
-                : (job.location || '').toLowerCase();
+                : String(job.location).toLowerCase();
         }
 
-        // in your filter state collection
-        const minSalary = parseInt(document.getElementById('filter-salary-min').value) || 0;
-
-        // in filteredJobs
+        const minSalary = parseInt(f.salary, 10) || 0;
         if (minSalary > 0) {
             const median = job.salary?.median;
             if (!median || median < minSalary) return false;
         }
 
-        // Remote only
-        if (f.remoteOnly) {
-            const isRemote = location.includes('remote')
-                || (job.workplaceType && job.workplaceType.toLowerCase() === 'remote');
-            if (!isRemote) return false;
+        const isRemote = job.is_remote === true
+            || job.remote === true
+            || location.includes('remote')
+            || String(job.workplaceType || '').toLowerCase() === 'remote';
+        if (f.remoteOnly && !isRemote) return false;
+
+        if (f.ats && String(job.ats || '').toLowerCase() !== f.ats.toLowerCase()) return false;
+
+        if (f.skill_level && String(job.skill_level || '').toLowerCase() !== f.skill_level.toLowerCase()) return false;
+
+        if (f.experience_level && String(job.experience_level || '').toLowerCase() !== f.experience_level.toLowerCase()) return false;
+
+        if (f.country) {
+            const country = String(job.location_country || '').toUpperCase();
+            if (f.country === 'CA' && country !== 'CA') return false;
+            if (f.country === 'US' && country !== 'US') return false;
+            if (f.country === 'REMOTE' && !isRemote) return false;
+            if (f.country === 'OTHER' && !['OTHER', 'UNKNOWN'].includes(country)) return false;
         }
 
-        // ATS
-        if (f.ats) {
-            const jobAts = (job.ats || '').toLowerCase();
-            if (jobAts !== f.ats.toLowerCase()) return false;
+        if (f.domain) {
+            if (!jobDomains(job).includes(f.domain.toLowerCase())) return false;
         }
 
-        // Skill level
-        if (f.skill_level) {
-            const jobSkillLevel = (job.skill_level || '').toLowerCase();
-            if (jobSkillLevel !== f.skill_level.toLowerCase()) return false;
-        }
-
-        // Date posted (within N days)
         if (f.posted) {
             const days = parseInt(f.posted, 10);
-            const raw = job.updated_at || job.first_seen;
+            const raw = job.updated_at || job.first_seen || job.scraped_at;
             const t = raw ? Date.parse(raw) : NaN;
-            if (isNaN(t)) return false;   // no date = excluded when a date filter is active
+            if (isNaN(t)) return false;
             const ageDays = (Date.now() - t) / 86400000;
             if (ageDays > days) return false;
         }
 
-        // Exclude title keywords
         if (f.exclude) {
             const excludeTerms = f.exclude.split(',').map(t => t.trim()).filter(Boolean);
             if (excludeTerms.some(term => title.includes(term))) return false;
         }
 
-        // Include Title keywords
         if (f.include) {
             const includeTerms = f.include.split(',').map(t => t.trim()).filter(Boolean);
             if (!includeTerms.some(term => title.includes(term))) return false;
@@ -158,26 +172,39 @@ export function filterJobs(allJobs) {
         return (
             (!titleRegex || titleRegex.test(title)) &&
             (!companyRegex || companyRegex.test(company)) &&
-            (!f.location || fuzzyMatch(f.location, location))
+            (!locationRegex || fuzzyMatch(f.location, location))
         );
     });
 
     return { filteredJobs, filterState };
 }
 
-/** Reset all filter DOM inputs to defaults */
+/** Reset all filter DOM inputs to defaults. */
 export function clearFilterInputs() {
-    document.getElementById('filter-title').value = '';
-    document.getElementById('filter-company').value = '';
-    document.getElementById('filter-location').value = '';
-    document.getElementById('filter-salary-min').value = '';
-    document.getElementById('filter-exclude').value = '';
-    document.getElementById('filter-include').value = '';
-    document.getElementById('filter-status').value = '';
-    document.getElementById('filter-ats').value = '';
-    document.getElementById('filter-skill-level').value = '';
-    document.getElementById('filter-posted').value = '';
-    document.getElementById('filter-hide-recruiters').checked = true;
-    document.getElementById('filter-remote-only').checked = false;
-    document.getElementById('filter-hide-applied').checked = false;
+    const values = {
+        'filter-title': '',
+        'filter-company': '',
+        'filter-location': '',
+        'filter-salary-min': '',
+        'filter-exclude': '',
+        'filter-include': '',
+        'filter-status': '',
+        'filter-ats': '',
+        'filter-skill-level': '',
+        'filter-experience-level': '',
+        'filter-country': '',
+        'filter-domain': '',
+        'filter-posted': '',
+    };
+    Object.entries(values).forEach(([id, value]) => {
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+    });
+
+    const hideRecruiters = document.getElementById('filter-hide-recruiters');
+    const remoteOnly = document.getElementById('filter-remote-only');
+    const hideApplied = document.getElementById('filter-hide-applied');
+    if (hideRecruiters) hideRecruiters.checked = true;
+    if (remoteOnly) remoteOnly.checked = false;
+    if (hideApplied) hideApplied.checked = false;
 }

@@ -1,11 +1,11 @@
 // ============================================================
-// JOB BOARD APP 
+// JOB BOARD APP
 // ============================================================
 
-import { showToast, showLoadingToast, setUIBusy, updateFABVisibility, updateSortIndicators } from './ui_utils.js';
+import { showToast, showLoadingToast, setUIBusy, updateFABVisibility } from './ui_utils.js';
 import { saveApplicationStatus } from './storage.js';
 import { createColumns } from './columns.js';
-import { loadJobsProgressive, updateStats } from './jobs_loader.js';
+import { loadJobsProgressive } from './jobs_loader.js';
 import { filterJobs, clearFilterInputs } from './filters.js';
 import { render } from './renderer.js';
 import { updateURL, loadFromURL } from './url_state.js';
@@ -26,8 +26,22 @@ class JobBoardApp {
         this.isFullyLoaded = false;
 
         this.filterState = {
-            title: '', company: '', location: '', status: '',
-            ats: '', skill_level: '', remoteOnly: false
+            title: '',
+            company: '',
+            location: '',
+            salary: '',
+            status: '',
+            ats: '',
+            skill_level: '',
+            experience_level: '',
+            country: 'CA',
+            domain: '',
+            posted: '',
+            exclude: '',
+            include: '',
+            remoteOnly: false,
+            hideRecruiters: true,
+            hideApplied: false
         };
 
         this.debounceTimer = null;
@@ -35,16 +49,14 @@ class JobBoardApp {
         this.sortWorker = null;
     }
 
-    // ── Initialization ───────────────────────────────────────────
     async init() {
         await this.loadJobs();
         setupEventListeners(this);
         this.loadFromURL();
-        this.setupViewToggle();  // ← add this
+        this.setupViewToggle();
         this.render();
     }
 
-    // ── Data Loading ───────────────────────────────────────────
     async loadJobs() {
         const loadingEl = document.getElementById('loading');
         const resultsEl = document.getElementById('results');
@@ -57,7 +69,6 @@ class JobBoardApp {
             resultsEl.style.display = 'block';
 
             console.log(`Loaded ${this.allJobs.length} jobs (more loading...)`);
-
         } catch (error) {
             console.error('Error loading jobs:', error);
             showToast('Error loading job data.', 'danger');
@@ -65,7 +76,6 @@ class JobBoardApp {
         }
     }
 
-    // ── Rendering ────────────────────────────────────────────
     render() {
         render(this);
     }
@@ -75,7 +85,6 @@ class JobBoardApp {
         this.debounceTimer = setTimeout(() => this.render(), 300);
     }
 
-    // ── Filtering ────────────────────────────────────────────
     applyFilters() {
         const { filteredJobs, filterState } = filterJobs(this.allJobs);
         this.filteredJobs = filteredJobs;
@@ -85,12 +94,11 @@ class JobBoardApp {
         updateURL(this.filterState, this.currentPage, this.sortState);
         updateHeatmapIfVisible();
 
-        // Only re-sort if a sort is active AND it's a sortable column
         const sortableKeys = ['company', 'salary', 'posted'];
         if (this.sortState.key && sortableKeys.includes(this.sortState.key)) {
             this.sortAndRender();
         } else {
-            this.sortState.key = null;   // clear a stale non-sortable key
+            this.sortState.key = null;
             this.render();
         }
     }
@@ -98,8 +106,10 @@ class JobBoardApp {
     clearFilters() {
         clearFilterInputs();
         this.filterState = {
-            title: '', company: '', location: '', status: '',
-            ats: '', skill_level: '', remoteOnly: false
+            title: '', company: '', location: '', salary: '', status: '',
+            ats: '', skill_level: '', experience_level: '', country: 'CA', domain: '',
+            posted: '', exclude: '', include: '', remoteOnly: false,
+            hideRecruiters: true, hideApplied: false
         };
         this.filteredJobs = [...this.allJobs];
         this.currentPage = 1;
@@ -116,19 +126,20 @@ class JobBoardApp {
     }
 
     refilter() {
-        const { filteredJobs } = filterJobs(this.allJobs);
+        const { filteredJobs, filterState } = filterJobs(this.allJobs);
         this.filteredJobs = filteredJobs;
+        this.filterState = filterState;
         updateHeatmapIfVisible();
-        this.render();   // always render so the page count reflects newly loaded jobs
+        this.render();
     }
 
     hasActiveFilters() {
         const f = this.filterState;
-        return f.title || f.company || f.location || f.status ||
-            f.ats || f.skill_level || f.remoteOnly || f.exclude || f.include;
+        return f.title || f.company || f.location || f.salary || f.status ||
+            f.ats || f.skill_level || f.experience_level || f.country || f.domain ||
+            f.posted || f.remoteOnly || f.exclude || f.include;
     }
 
-    // ── Sorting ──────────────────────────────────────────────
     handleSort(key) {
         if (!this.isFullyLoaded) {
             showToast('Please wait until dataset processing finishes...', 'warning');
@@ -145,8 +156,6 @@ class JobBoardApp {
 
         this.currentPage = 1;
         updateURL(this.filterState, this.currentPage, this.sortState);
-
-        // Run the heavy sort processing on demand
         this.sortAndRender();
     }
 
@@ -171,7 +180,6 @@ class JobBoardApp {
         this.render();
     }
 
-    // ── Pagination ───────────────────────────────────────────
     previousPage() {
         if (this.currentPage > 1) {
             this.currentPage--;
@@ -180,7 +188,6 @@ class JobBoardApp {
     }
 
     getTotalJobsCount() {
-        // While still streaming, always report the live filtered total so the count grows
         if (!this.isFullyLoaded) return this.filteredJobs.length;
         if (this.sortState?.key && this.sortedJobs) return this.sortedJobs.length;
         return this.filteredJobs.length;
@@ -189,7 +196,6 @@ class JobBoardApp {
     nextPage() {
         const totalJobsCount = this.getTotalJobsCount();
         const totalPages = Math.max(1, Math.ceil(totalJobsCount / this.perPage));
-
         if (this.currentPage < totalPages) {
             this.currentPage++;
             this.triggerPageUpdate();
@@ -201,7 +207,6 @@ class JobBoardApp {
         this.render();
     }
 
-    // ── URL State ────────────────────────────────────────────
     loadFromURL() {
         const { hasFilters, page, sortKey, sortDir } = loadFromURL();
         this.currentPage = page;
@@ -209,7 +214,6 @@ class JobBoardApp {
         if (hasFilters) this.applyFilters();
     }
 
-    // ── Batch Processing ─────────────────────────────────────
     handleBatch() {
         const selected = document.querySelectorAll('.save-checkbox:checked, .apply-checkbox:checked, .ignored-checkbox:checked');
         if (selected.length === 0) {
@@ -218,7 +222,6 @@ class JobBoardApp {
         }
 
         setUIBusy(true);
-
         try {
             document.querySelectorAll('.save-checkbox:checked').forEach(box => {
                 if (box.dataset.jobUrl) saveApplicationStatus(box.dataset.jobUrl, 'saved');
@@ -233,7 +236,6 @@ class JobBoardApp {
             showToast(`Updated ${selected.length} job(s) successfully!`, 'success');
             updateFABVisibility();
             this.render();
-
         } catch (err) {
             showToast('Error updating job status.', 'danger');
             console.error(err);
@@ -242,7 +244,6 @@ class JobBoardApp {
         }
     }
 
-    // ── View Toggle ──────────────────────────────────────────
     setupViewToggle() {
         document.querySelectorAll('.view-toggle').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -258,11 +259,8 @@ class JobBoardApp {
     }
 }
 
-// ============================================================
-// INITIALIZE APP
-// ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     const app = new JobBoardApp();
-    window.app = app;   // <-- add this, lets you poke it from console
+    window.app = app;
     app.init();
 });
